@@ -31,19 +31,17 @@ STRIDE = 30  # sample every Nth frame when collecting team-classifier training d
 _PALETTE = sv.ColorPalette.from_hex(["#00BFFF", "#FF1493", "#FFD700"])
 
 
-def _resolve_goalkeeper_teams(players: sv.Detections, goalkeepers: sv.Detections) -> np.ndarray:
-    if len(players) == 0:
-        return np.zeros(len(goalkeepers), dtype=int)
+def resolve_goalkeepers_team_id(players: sv.Detections, goalkeepers: sv.Detections) -> np.ndarray:
+    goalkeepers_xy = goalkeepers.get_anchors_coordinates(sv.Position.BOTTOM_CENTER)
     players_xy = players.get_anchors_coordinates(sv.Position.BOTTOM_CENTER)
-    team_ids = []
-    for gk_xy in goalkeepers.get_anchors_coordinates(sv.Position.BOTTOM_CENTER):
-        t0 = players_xy[players.class_id == 0]
-        t1 = players_xy[players.class_id == 1]
-        if len(t0) and len(t1):
-            team_ids.append(0 if np.linalg.norm(gk_xy - t0.mean(0)) < np.linalg.norm(gk_xy - t1.mean(0)) else 1)
-        else:
-            team_ids.append(0 if len(t0) else 1)
-    return np.array(team_ids, dtype=int)
+    team_0_centroid = players_xy[players.class_id == 0].mean(axis=0)
+    team_1_centroid = players_xy[players.class_id == 1].mean(axis=0)
+    goalkeepers_team_id = []
+    for goalkeeper_xy in goalkeepers_xy:
+        dist_0 = np.linalg.norm(goalkeeper_xy - team_0_centroid)
+        dist_1 = np.linalg.norm(goalkeeper_xy - team_1_centroid)
+        goalkeepers_team_id.append(0 if dist_0 < dist_1 else 1)
+    return np.array(goalkeepers_team_id)
 
 
 # ---------------------------------------------------------------------------
@@ -70,10 +68,8 @@ def run_analysis(video_path: str, output_path: str) -> dict:
     for frame in sv.get_video_frames_generator(source_path=video_path, stride=STRIDE):
         result = model.infer(frame, confidence=CONF_THRESHOLD)[0]
         detections = sv.Detections.from_inference(result)
-        players_crops = [
-            sv.crop_image(frame, xyxy)
-            for xyxy in detections[detections.class_id == PLAYER_ID].xyxy
-        ]
+        players_detections = detections[detections.class_id == PLAYER_ID]
+        players_crops = [sv.crop_image(frame, xyxy) for xyxy in detections.xyxy]
         crops += players_crops
 
     logger.info("Phase 1 complete: %d player crops collected", len(crops))
@@ -118,22 +114,17 @@ def run_analysis(video_path: str, output_path: str) -> dict:
             player_det = people_det[people_det.class_id == PLAYER_ID]
             ref_det = people_det[people_det.class_id == REFEREE_ID]
 
-            if len(player_det) > 0:
-                players_crops = [sv.crop_image(frame, xyxy) for xyxy in player_det.xyxy]
-                player_det.class_id = team_classifier.predict(players_crops)
+            players_crops = [sv.crop_image(frame, xyxy) for xyxy in player_det.xyxy]
+            player_det.class_id = team_classifier.predict(players_crops)
 
-            if len(gk_det) > 0:
-                gk_det.class_id = _resolve_goalkeeper_teams(player_det, gk_det)
+            gk_det.class_id = resolve_goalkeepers_team_id(player_det, gk_det)
 
-            if len(ref_det) > 0:
-                ref_det.class_id = ref_det.class_id - 1  # 3 → 2 (gold palette index)
+            ref_det.class_id -= 1
 
-            non_empty = [d for d in [player_det, gk_det, ref_det] if len(d) > 0]
-            all_det = sv.Detections.merge(non_empty) if non_empty else sv.Detections.empty()
+            all_det = sv.Detections.merge([player_det, gk_det, ref_det])
             all_det.class_id = all_det.class_id.astype(int)
 
-            tracker_ids = all_det.tracker_id
-            labels = [f"#{tid}" for tid in tracker_ids] if tracker_ids is not None else []
+            labels = [f"#{tracker_id}" for tracker_id in all_det.tracker_id]
 
             annotated = ellipse_ann.annotate(frame.copy(), all_det)
             annotated = label_ann.annotate(annotated, all_det, labels)

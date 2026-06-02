@@ -14,3 +14,6 @@ data/
 uploads/
 model/*.onnx
 atletico.db
+
+# Environment variables
+.env
