@@ -1,0 +1,43 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./model:/app/model
+      - ./data:/app/data
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - redis
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build: .
+    volumes:
+      - ./uploads:/app/uploads
+      - ./model:/app/model
+      - ./data:/app/data
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      ROBOFLOW_API_KEY: ${ROBOFLOW_API_KEY}
+    depends_on:
+      - redis
+    command: celery -A app.worker worker --loglevel=info
+
+  flower:
+    build: .
+    ports:
+      - "5555:5555"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - redis
+      - worker
+    command: celery -A app.worker flower --port=5555
