@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from datetime import datetime
@@ -33,9 +34,9 @@ def run_inference(task_id: str):
 
         output_path = f"uploads/{task_id}_annotated.mp4"
         stats = run_analysis(job.video_path, output_path)
-
+        job.verdict = json.dumps(stats)
         job.status = "completed"
-        job.annotated_video_url = f"/uploads/{task_id}_annotated.mp4"
+        job.annotated_video_url = output_path
         job.completed_at = datetime.utcnow()
         db.commit()
         logger.info("[%s] Status → completed  stats=%s", task_id, stats)
