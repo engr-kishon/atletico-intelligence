@@ -30,7 +30,8 @@ def run_inference(task_id: str):
         job = db.get(AnalysisJob, task_id)
         job.status = "processing"
         db.commit()
-        logger.info("[%s] Status → processing  video=%s", task_id, job.video_path)
+        logger.info("[%s] Status → processing  video=%s",
+                    task_id, job.video_path)
 
         output_path = f"uploads/{task_id}_annotated.mp4"
         stats = run_analysis(job.video_path, output_path)

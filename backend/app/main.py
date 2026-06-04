@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Generator
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
@@ -22,6 +23,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Atlético Intelligence", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 

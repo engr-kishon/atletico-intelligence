@@ -1,26 +1,24 @@
+from sports.annotators.soccer import draw_pitch, draw_points_on_pitch
+from sports.configs.soccer import SoccerPitchConfiguration
+from sports.common.team import TeamClassifier
+from ultralytics import YOLO
+import supervision as sv
+import numpy as np
+import cv2
+from collections import defaultdict, deque, Counter
+import logging
 import os
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
-import logging
-from collections import defaultdict, deque, Counter
-
-import cv2
-import numpy as np
-import supervision as sv
-
-from ultralytics import YOLO
-from sports.common.team import TeamClassifier
-from sports.configs.soccer import SoccerPitchConfiguration
-from sports.annotators.soccer import draw_pitch, draw_points_on_pitch
 
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
-PLAYER_MODEL_ID  = "football-players-detection-3zvbc/11"
+PLAYER_MODEL_ID = "football-players-detection-3zvbc/11"
 PLAYER_MODEL_PATH = os.getenv("PLAYER_MODEL_PATH", "models/best.pt")
-POINT_MODEL_PATH  = os.getenv("POINT_MODEL_PATH", "models/point_best.pt")
+POINT_MODEL_PATH = os.getenv("POINT_MODEL_PATH", "models/point_best.pt")
 
 BALL_ID, GOALKEEPER_ID, PLAYER_ID, REFEREE_ID = 0, 1, 2, 3
 CONF_THRESHOLD, NMS_THRESHOLD, STRIDE = 0.3, 0.5, 30
@@ -28,7 +26,8 @@ CONF_THRESHOLD, NMS_THRESHOLD, STRIDE = 0.3, 0.5, 30
 REVOTE_INTERVAL, VOTE_HISTORY, EMA_ALPHA = 15, 15, 0.4
 PITCH_CONF, RANSAC_REPROJ = 0.5, 500.0
 
-POSSESSION_DIST, KICK_SPEED = float(os.getenv("POSSESSION_DIST", 350)), float(os.getenv("KICK_SPEED", 50))
+POSSESSION_DIST, KICK_SPEED = float(
+    os.getenv("POSSESSION_DIST", 350)), float(os.getenv("KICK_SPEED", 50))
 MIN_FLIGHT, MAX_FLIGHT, MAX_BALL_GAP = 3, 90, 10
 LEVEL_TOL_CM, GK_MARGIN_FRAC = 40.0, 0.15
 
@@ -38,14 +37,15 @@ GREEN, RED = (0, 200, 0), (0, 0, 255)
 CONFIG = SoccerPitchConfiguration()
 PITCH_VERTICES = np.array(CONFIG.vertices, dtype=np.float32)
 PITCH_LENGTH = float(PITCH_VERTICES[:, 0].max())
-PITCH_WIDTH  = float(PITCH_VERTICES[:, 1].max())
+PITCH_WIDTH = float(PITCH_VERTICES[:, 1].max())
 CENTER = PITCH_LENGTH / 2.0
 
-_PALETTE  = sv.ColorPalette.from_hex(["#00BFFF", "#FF1493", "#FFD700"])
-_ELLIPSE  = sv.EllipseAnnotator(color=_PALETTE, thickness=2)
-_LABEL    = sv.LabelAnnotator(color=_PALETTE, text_color=sv.Color.from_hex("#000000"),
-                              text_position=sv.Position.BOTTOM_CENTER)
-_TRIANGLE = sv.TriangleAnnotator(color=sv.Color.from_hex("#FFD700"), base=25, height=21, outline_thickness=1)
+_PALETTE = sv.ColorPalette.from_hex(["#00BFFF", "#FF1493", "#FFD700"])
+_ELLIPSE = sv.EllipseAnnotator(color=_PALETTE, thickness=2)
+_LABEL = sv.LabelAnnotator(color=_PALETTE, text_color=sv.Color.from_hex("#000000"),
+                           text_position=sv.Position.BOTTOM_CENTER)
+_TRIANGLE = sv.TriangleAnnotator(color=sv.Color.from_hex(
+    "#FFD700"), base=25, height=21, outline_thickness=1)
 
 try:
     import torch
@@ -69,33 +69,42 @@ TEAM_DEVICE = DEVICE
 _player_model = None
 _pitch_model = None
 
+
 def _get_player_model():
     global _player_model
     if _player_model is None:
-        _player_model = YOLO(PLAYER_MODEL_PATH); _player_model.to(DEVICE)
+        _player_model = YOLO(PLAYER_MODEL_PATH)
+        _player_model.to(DEVICE)
         logger.info("Player model loaded: %s (%s)", PLAYER_MODEL_PATH, DEVICE)
     return _player_model
+
 
 def _get_pitch_model():
     global _pitch_model
     if _pitch_model is None:
-        _pitch_model = YOLO(POINT_MODEL_PATH); _pitch_model.to(DEVICE)
+        _pitch_model = YOLO(POINT_MODEL_PATH)
+        _pitch_model.to(DEVICE)
         logger.info("Pitch model loaded: %s (%s)", POINT_MODEL_PATH, DEVICE)
     return _pitch_model
 
 # --------------------------------------------------------------------------- #
 # Geometry / offside helpers
 # --------------------------------------------------------------------------- #
+
+
 def _anchors(d):
     return np.empty((0, 2)) if len(d) == 0 else d.get_anchors_coordinates(sv.Position.BOTTOM_CENTER)
+
 
 def _project(xy, H):
     if H is None or len(xy) == 0:
         return np.empty((0, 2))
     return cv2.perspectiveTransform(np.asarray(xy, np.float32).reshape(-1, 1, 2), H).reshape(-1, 2)
 
+
 def _project_inv(pts, H_inv):
     return cv2.perspectiveTransform(np.asarray(pts, np.float32).reshape(-1, 1, 2), H_inv).reshape(-1, 2)
+
 
 def _homography(pitch_result):
     kp = sv.KeyPoints.from_ultralytics(pitch_result)
@@ -104,8 +113,10 @@ def _homography(pitch_result):
     mask = kp.confidence[0] > PITCH_CONF
     if int(mask.sum()) < 4:
         return None
-    H, _ = cv2.findHomography(kp.xy[0][mask].astype(np.float32), PITCH_VERTICES[mask], cv2.RANSAC, RANSAC_REPROJ)
+    H, _ = cv2.findHomography(kp.xy[0][mask].astype(
+        np.float32), PITCH_VERTICES[mask], cv2.RANSAC, RANSAC_REPROJ)
     return None if H is None else H / H[2, 2]
+
 
 def _resolve_gk_team(players, gks):
     if len(gks) == 0:
@@ -120,8 +131,10 @@ def _resolve_gk_team(players, gks):
     c0, c1 = t0.mean(0), t1.mean(0)
     return np.array([0 if np.linalg.norm(x - c0) < np.linalg.norm(x - c1) else 1 for x in g])
 
+
 def _majority(v):
     return Counter(v).most_common(1)[0][0]
+
 
 def _draw_offside_line(frame, line_x, H, color, thickness=3):
     try:
@@ -131,10 +144,12 @@ def _draw_offside_line(frame, line_x, H, color, thickness=3):
     ys = np.linspace(0, PITCH_WIDTH, 50)
     img = _project_inv(np.column_stack([np.full_like(ys, line_x), ys]), H_inv)
     h, w = frame.shape[:2]
-    ok = (img[:, 0] > -5*w) & (img[:, 0] < 5*w) & (img[:, 1] > -5*h) & (img[:, 1] < 5*h)
+    ok = (img[:, 0] > -5*w) & (img[:, 0] < 5 *
+                               w) & (img[:, 1] > -5*h) & (img[:, 1] < 5*h)
     pts = img[ok].astype(np.int32)
     if len(pts) >= 2:
         cv2.polylines(frame, [pts], False, color, thickness, cv2.LINE_AA)
+
 
 def _radar_line_points(line_x):
     ys = np.linspace(0, PITCH_WIDTH, 60)
@@ -143,11 +158,14 @@ def _radar_line_points(line_x):
 # --------------------------------------------------------------------------- #
 # Stages
 # --------------------------------------------------------------------------- #
+
+
 def _fit_team_classifier(video_path):
     model = _get_player_model()
     crops = []
     for frame in sv.get_video_frames_generator(source_path=video_path, stride=STRIDE):
-        det = sv.Detections.from_ultralytics(model(frame, conf=CONF_THRESHOLD, **PREDICT_KWARGS)[0])
+        det = sv.Detections.from_ultralytics(
+            model(frame, conf=CONF_THRESHOLD, **PREDICT_KWARGS)[0])
         players = det[det.class_id == PLAYER_ID]
         crops += [sv.crop_image(frame, b) for b in players.xyxy]
     tc = TeamClassifier(device=TEAM_DEVICE)
@@ -155,37 +173,45 @@ def _fit_team_classifier(video_path):
     logger.info("TeamClassifier fitted on %d crops", len(crops))
     return tc
 
+
 def _collect(video_path, team_classifier):
     model, pitch_model = _get_player_model(), _get_pitch_model()
-    tracker = sv.ByteTrack(); tracker.reset()
+    tracker = sv.ByteTrack()
+    tracker.reset()
     votes = defaultdict(lambda: deque(maxlen=VOTE_HISTORY))
     H_smooth, records = None, []
 
     for fidx, frame in enumerate(sv.get_video_frames_generator(video_path)):
         H_raw = _homography(pitch_model(frame, **PREDICT_KWARGS)[0])
         if H_raw is not None:
-            H_smooth = H_raw if H_smooth is None else (EMA_ALPHA*H_raw + (1-EMA_ALPHA)*H_smooth)
+            H_smooth = H_raw if H_smooth is None else (
+                EMA_ALPHA*H_raw + (1-EMA_ALPHA)*H_smooth)
             H_smooth = H_smooth / H_smooth[2, 2]
 
-        det = sv.Detections.from_ultralytics(model(frame, conf=CONF_THRESHOLD, **PREDICT_KWARGS)[0])
+        det = sv.Detections.from_ultralytics(
+            model(frame, conf=CONF_THRESHOLD, **PREDICT_KWARGS)[0])
         ball = det[det.class_id == BALL_ID]
         if len(ball):
             ball.xyxy = sv.pad_boxes(ball.xyxy, px=10)
-        det = det[det.class_id != BALL_ID].with_nms(threshold=NMS_THRESHOLD, class_agnostic=True)
+        det = det[det.class_id != BALL_ID].with_nms(
+            threshold=NMS_THRESHOLD, class_agnostic=True)
         det = tracker.update_with_detections(det)
 
-        gk      = det[det.class_id == GOALKEEPER_ID]
+        gk = det[det.class_id == GOALKEEPER_ID]
         players = det[det.class_id == PLAYER_ID]
-        refs    = det[det.class_id == REFEREE_ID]
+        refs = det[det.class_id == REFEREE_ID]
 
         if len(players):
             revote = (fidx % REVOTE_INTERVAL == 0)
-            need = [i for i, t in enumerate(players.tracker_id) if t not in votes or revote]
+            need = [i for i, t in enumerate(
+                players.tracker_id) if t not in votes or revote]
             if need:
-                preds = team_classifier.predict([sv.crop_image(frame, players.xyxy[i]) for i in need])
+                preds = team_classifier.predict(
+                    [sv.crop_image(frame, players.xyxy[i]) for i in need])
                 for i, p in zip(need, preds):
                     votes[players.tracker_id[i]].append(int(p))
-            players.class_id = np.array([_majority(votes[t]) for t in players.tracker_id])
+            players.class_id = np.array(
+                [_majority(votes[t]) for t in players.tracker_id])
         if len(gk):
             gk.class_id = _resolve_gk_team(players, gk)
         if len(refs):
@@ -210,8 +236,10 @@ def _collect(video_path, team_classifier):
     logger.info("Collected %d frames", len(records))
     return records
 
+
 def _estimate_attack_sign(records):
-    gk_x = {0: [], 1: []}; plr_x = {0: [], 1: []}
+    gk_x = {0: [], 1: []}
+    plr_x = {0: [], 1: []}
     for r in records:
         if r["H"] is None:
             continue
@@ -238,6 +266,7 @@ def _estimate_attack_sign(records):
     logger.info("Attack sign: %s", sign)
     return sign
 
+
 def _offside_ids_at(rec, attacking_team, ball_xy, sign):
     s, dfd = sign[attacking_team], 1 - attacking_team
     def_adv = list(s * rec["players_pitch"][rec["players_team"] == dfd][:, 0])
@@ -254,6 +283,7 @@ def _offside_ids_at(rec, attacking_team, ball_xy, sign):
             off.add(int(tid))
     return off, s * line_adv
 
+
 def _detect_and_judge(records, sign):
     N = len(records)
     ball = np.full((N, 2), np.nan)
@@ -264,7 +294,8 @@ def _detect_and_judge(records, sign):
     for a, b in zip(valid[:-1], valid[1:]):
         if 1 < b - a <= MAX_BALL_GAP + 1:
             for k in range(a + 1, b):
-                t = (k - a) / (b - a); ball[k] = (1 - t) * ball[a] + t * ball[b]
+                t = (k - a) / (b - a)
+                ball[k] = (1 - t) * ball[a] + t * ball[b]
     for i in range(1, N - 1):
         if np.isnan(ball[i, 0]) or np.isnan(ball[i-1, 0]) or np.isnan(ball[i+1, 0]):
             continue
@@ -313,7 +344,8 @@ def _detect_and_judge(records, sign):
         n_passes += 1
         if b[3] != a[3]:
             continue
-        off_ids, line_x = _offside_ids_at(records[kick_f], a[3], ball[kick_f], sign)
+        off_ids, line_x = _offside_ids_at(
+            records[kick_f], a[3], ball[kick_f], sign)
         verdicts.append({
             "kick_f": int(kick_f), "passer": int(a[2]), "team": int(a[3]),
             "recv_f": int(recv_f), "recv": int(b[2]),
@@ -325,15 +357,19 @@ def _detect_and_judge(records, sign):
 # --------------------------------------------------------------------------- #
 # Render
 # --------------------------------------------------------------------------- #
+
+
 def _to_dets(box, cls, tid):
     if len(box) == 0:
         return sv.Detections.empty()
     return sv.Detections(xyxy=box.astype(np.float32), class_id=cls.astype(int), tracker_id=tid.astype(int))
 
+
 def _build_radar(rec, line_x=None):
     radar = draw_pitch(CONFIG)
     for team, hexc in ((0, '00BFFF'), (1, 'FF1493')):
-        xy = rec["players_pitch"][rec["players_team"] == team] if len(rec["players_pitch"]) else np.empty((0, 2))
+        xy = rec["players_pitch"][rec["players_team"] == team] if len(
+            rec["players_pitch"]) else np.empty((0, 2))
         radar = draw_points_on_pitch(config=CONFIG, xy=xy, face_color=sv.Color.from_hex(hexc),
                                      edge_color=sv.Color.BLACK, radius=16, pitch=radar)
     if len(rec["gk_pitch"]):
@@ -347,19 +383,26 @@ def _build_radar(rec, line_x=None):
                                      edge_color=sv.Color.from_hex('FF3030'), radius=4, pitch=radar)
     return radar
 
+
 def _overlay_radar(frame, radar, margin=20, border=3):
     fh, fw = frame.shape[:2]
-    rw = int(fw * RADAR_SCALE_W); rh = int(radar.shape[0] * rw / radar.shape[1])
+    rw = int(fw * RADAR_SCALE_W)
+    rh = int(radar.shape[0] * rw / radar.shape[1])
     small = cv2.resize(radar, (rw, rh))
-    x2, y2 = fw - margin, fh - margin; x1, y1 = x2 - rw, y2 - rh
-    cv2.rectangle(frame, (x1-border, y1-border), (x2+border, y2+border), (255, 255, 255), border)
+    x2, y2 = fw - margin, fh - margin
+    x1, y1 = x2 - rw, y2 - rh
+    cv2.rectangle(frame, (x1-border, y1-border),
+                  (x2+border, y2+border), (255, 255, 255), border)
     frame[y1:y2, x1:x2] = small
     return frame
+
 
 def _banner(frame, text, color):
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)
     cv2.rectangle(frame, (20, 18), (44 + tw, 40 + th), (0, 0, 0), -1)
-    cv2.putText(frame, text, (32, 32 + th), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3, cv2.LINE_AA)
+    cv2.putText(frame, text, (32, 32 + th),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3, cv2.LINE_AA)
+
 
 def _render(video_path, output_path, records, verdicts):
     active = {}
@@ -368,19 +411,22 @@ def _render(video_path, output_path, records, verdicts):
             active[f] = v
 
     video_info = sv.VideoInfo.from_video_path(video_path)
-    with sv.VideoSink(output_path, video_info) as sink:
+    with sv.VideoSink(output_path, video_info, codec="avc1") as sink:
         for fidx, frame in enumerate(sv.get_video_frames_generator(video_path)):
             rec = records[fidx]
-            players = _to_dets(rec["players_box"], rec["players_team"], rec["players_tid"])
-            gk      = _to_dets(rec["gk_box"], rec["gk_team"], rec["gk_tid"])
-            refs    = _to_dets(rec["ref_box"], np.full(len(rec["ref_box"]), 2), rec["ref_tid"])
-            merged  = sv.Detections.merge([players, gk, refs])
+            players = _to_dets(rec["players_box"],
+                               rec["players_team"], rec["players_tid"])
+            gk = _to_dets(rec["gk_box"], rec["gk_team"], rec["gk_tid"])
+            refs = _to_dets(rec["ref_box"], np.full(
+                len(rec["ref_box"]), 2), rec["ref_tid"])
+            merged = sv.Detections.merge([players, gk, refs])
 
             annotated = frame.copy()
             if len(merged):
                 merged.class_id = merged.class_id.astype(int)
                 annotated = _ELLIPSE.annotate(annotated, merged)
-                annotated = _LABEL.annotate(annotated, merged, [f"#{t}" for t in merged.tracker_id])
+                annotated = _LABEL.annotate(
+                    annotated, merged, [f"#{t}" for t in merged.tracker_id])
             if rec["ball_box"] is not None:
                 annotated = _TRIANGLE.annotate(annotated, sv.Detections(
                     xyxy=rec["ball_box"][None, :].astype(np.float32), class_id=np.array([0])))
@@ -393,8 +439,10 @@ def _render(video_path, output_path, records, verdicts):
                 hit = np.where(rec["players_tid"] == v["recv"])[0]
                 if len(hit):
                     x1, y1, x2, y2 = rec["players_box"][hit[0]].astype(int)
-                    cv2.ellipse(annotated, ((x1+x2)//2, y2), ((x2-x1)//2, 16), 0, 0, 360, color, 5)
-                _banner(annotated, f"{'OFFSIDE' if v['offence'] else 'ONSIDE'}  #{v['passer']} -> #{v['recv']}", color)
+                    cv2.ellipse(annotated, ((x1+x2)//2, y2),
+                                ((x2-x1)//2, 16), 0, 0, 360, color, 5)
+                _banner(
+                    annotated, f"{'OFFSIDE' if v['offence'] else 'ONSIDE'}  #{v['passer']} -> #{v['recv']}", color)
 
             annotated = _overlay_radar(annotated, _build_radar(rec, line_x))
             sink.write_frame(annotated)
@@ -403,14 +451,20 @@ def _render(video_path, output_path, records, verdicts):
 # --------------------------------------------------------------------------- #
 # Public entry point (called by the Celery worker)
 # --------------------------------------------------------------------------- #
+
+
 def run_analysis(video_path: str, output_path: str) -> dict:
     logger.info("run_analysis: %s -> %s", video_path, output_path)
 
-    team_classifier = _fit_team_classifier(video_path)      # 1 + 2: input + analysis
-    records = _collect(video_path, team_classifier)          # 3: detect / track / project
+    team_classifier = _fit_team_classifier(
+        video_path)      # 1 + 2: input + analysis
+    # 3: detect / track / project
+    records = _collect(video_path, team_classifier)
     sign = _estimate_attack_sign(records)                    # attack direction
-    verdicts, n_passes = _detect_and_judge(records, sign)    # 5: offside / onside
-    _render(video_path, output_path, records, verdicts)      # 4 + 7: radar + saved video
+    verdicts, n_passes = _detect_and_judge(
+        records, sign)    # 5: offside / onside
+    # 4 + 7: radar + saved video
+    _render(video_path, output_path, records, verdicts)
 
     n_off = sum(v["offence"] for v in verdicts)
     stats = {
