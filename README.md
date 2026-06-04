@@ -102,52 +102,73 @@ Annotated pitch images with 32 keypoint landmarks (corners, penalty spots, centr
 
 ---
 
-## How to Run with Docker
+## How to Run
 
 ### Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/) installed
-- `backend/.env` populated with your API keys (see below)
+- Python 3.13 and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Node.js 22+
+- Redis running locally (`brew install redis && brew services start redis` on macOS)
 
 ### 1. Configure environment variables
 
-`backend/.env` must contain:
+Create `backend/.env`:
 
 ```env
 ROBOFLOW_API_KEY=your_key_here
 HF_TOKEN=your_huggingface_token_here
 PLAYER_MODEL_PATH=models/best.pt
 POINT_MODEL_PATH=models/point_best.pt
+REDIS_URL=redis://localhost:6379/0
 ```
 
-> The Redis URL is injected automatically by docker-compose and does not need to be set manually.
-
-### 2. Build and start
+### 2. Install dependencies
 
 ```bash
-docker compose up --build
+# Backend
+cd backend
+uv sync
+
+# Frontend
+cd ../frontend
+npm install
 ```
 
-The first build takes several minutes — PyTorch and the ML dependencies are large.
+### 3. Start all four services (separate terminals)
 
-### 3. Open the app
+**Redis** (if not already running as a background service):
+```bash
+redis-server
+```
 
-Navigate to [http://localhost](http://localhost) in your browser.
+**Celery worker:**
+```bash
+cd backend
+uv run celery -A app.worker.celery_app worker --pool=threads --concurrency=2 --loglevel=info
+```
+
+**FastAPI:**
+```bash
+cd backend
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+**Frontend:**
+```bash
+cd frontend
+npm run dev
+```
+
+### 4. Open the app
+
+Navigate to [http://localhost:5173](http://localhost:5173) in your browser.
 
 Upload a football match clip (MP4). The status will change from *Uploading* → *Analyzing* → *Completed*. The annotated video and decision table will appear automatically once processing finishes.
-
-### 4. Stop
-
-```bash
-docker compose down
-```
-
-Uploaded videos and the SQLite database are persisted in `backend/uploads/` and `backend/data/` on your host machine, so they survive container restarts.
 
 ### Ports
 
 | Port | Service |
 |---|---|
-| 80 | App (nginx — frontend + API proxy) |
-
-All other ports (Redis 6379, uvicorn 8000) are internal to the container and not exposed to the host.
+| 5173 | Frontend (Vite dev server) |
+| 8000 | FastAPI |
+| 6379 | Redis |
