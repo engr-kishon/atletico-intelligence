@@ -76,6 +76,7 @@ function App() {
     <div className="min-h-screen bg-gray-900 text-gray-100 p-8 font-sans">
       <div className="max-w-4xl mx-auto space-y-8">
         <header className="text-center">
+          <title>Atletico Intelligence</title> 
           <h1 className="text-4xl font-bold tracking-tight text-white mb-2">Atletico Intelligence</h1>
           <p className="text-gray-400">Tactical football video analysis</p>
         </header>

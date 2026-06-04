@@ -181,6 +181,21 @@ def _collect(video_path, team_classifier):
     votes = defaultdict(lambda: deque(maxlen=VOTE_HISTORY))
     H_smooth, records = None, []
 
+    pos_ema = {}
+    POS_ALPHA = 0.5
+
+    def _smooth(tids, pts):
+        if len(pts) == 0:
+            return pts
+        out = np.empty_like(pts)
+        for i, t in enumerate(tids):
+            t = int(t)
+            prev = pos_ema.get(t)
+            out[i] = pts[i] if prev is None else POS_ALPHA * \
+                pts[i] + (1 - POS_ALPHA) * prev
+            pos_ema[t] = out[i]
+        return out
+
     for fidx, frame in enumerate(sv.get_video_frames_generator(video_path)):
         H_raw = _homography(pitch_model(frame, **PREDICT_KWARGS)[0])
         if H_raw is not None:
@@ -212,8 +227,15 @@ def _collect(video_path, team_classifier):
                     votes[players.tracker_id[i]].append(int(p))
             players.class_id = np.array(
                 [_majority(votes[t]) for t in players.tracker_id])
-        if len(gk):
-            gk.class_id = _resolve_gk_team(players, gk)
+            if len(gk) and H_smooth is not None:
+                gx = _project(_anchors(gk), H_smooth)
+                keep = np.array([
+                    (0 <= p[1] <= PITCH_WIDTH) and (p[0] < 0.25 * PITCH_LENGTH or p[0] > 0.75 * PITCH_LENGTH)
+                    for p in gx
+                ])
+                gk = gk[keep]
+            if len(gk):
+                gk.class_id = _resolve_gk_team(players, gk)
         if len(refs):
             refs.class_id = np.full(len(refs), 2)
 
@@ -222,11 +244,11 @@ def _collect(video_path, team_classifier):
             "players_box":  players.xyxy.copy() if len(players) else np.empty((0, 4)),
             "players_team": np.asarray(players.class_id) if len(players) else np.empty(0, int),
             "players_tid":  np.asarray(players.tracker_id) if len(players) else np.empty(0, int),
-            "players_pitch": _project(_anchors(players), H_smooth),
+            "players_pitch": _smooth(players.tracker_id, _project(_anchors(players), H_smooth)),
             "gk_box":  gk.xyxy.copy() if len(gk) else np.empty((0, 4)),
             "gk_team": np.asarray(gk.class_id) if len(gk) else np.empty(0, int),
             "gk_tid":  np.asarray(gk.tracker_id) if len(gk) else np.empty(0, int),
-            "gk_pitch": _project(_anchors(gk), H_smooth),
+            "gk_pitch": _smooth(gk.tracker_id, _project(_anchors(gk), H_smooth)),
             "ref_box": refs.xyxy.copy() if len(refs) else np.empty((0, 4)),
             "ref_tid": np.asarray(refs.tracker_id) if len(refs) else np.empty(0, int),
             "ball_box":  (ball.xyxy[0].copy() if len(ball) else None),
@@ -236,7 +258,6 @@ def _collect(video_path, team_classifier):
     logger.info("Collected %d frames", len(records))
     return records
 
-
 def _estimate_attack_sign(records):
     gk_x = {0: [], 1: []}
     plr_x = {0: [], 1: []}
@@ -244,11 +265,13 @@ def _estimate_attack_sign(records):
         if r["H"] is None:
             continue
         for t, xy in zip(r["players_team"], r["players_pitch"]):
-            plr_x[int(t)].append(float(xy[0]))
+            if 0 <= xy[0] <= PITCH_LENGTH:
+                plr_x[int(t)].append(float(xy[0]))
         for t, xy in zip(r["gk_team"], r["gk_pitch"]):
-            gk_x[int(t)].append(float(xy[0]))
+            if 0 <= xy[0] <= PITCH_LENGTH:
+                gk_x[int(t)].append(float(xy[0]))
 
-    def m(v): return float(np.mean(v)) if len(v) else None
+    def m(v): return float(np.median(v)) if len(v) else None
     gk0, gk1, p0, p1 = m(gk_x[0]), m(gk_x[1]), m(plr_x[0]), m(plr_x[1])
     margin = GK_MARGIN_FRAC * PITCH_LENGTH
 
@@ -262,27 +285,91 @@ def _estimate_attack_sign(records):
         team0_right = p0 < p1
     else:
         team0_right = True
+
     sign = {0: +1, 1: -1} if team0_right else {0: -1, 1: +1}
-    logger.info("Attack sign: %s", sign)
+    logger.info("Attack sign: %s (gk0=%.0f gk1=%.0f p0=%.0f p1=%.0f)",
+                sign, gk0 or -1, gk1 or -1, p0 or -1, p1 or -1)
     return sign
 
+# def _estimate_attack_sign(records):
+#     gk_x = {0: [], 1: []}
+#     plr_x = {0: [], 1: []}
+#     for r in records:
+#         if r["H"] is None:
+#             continue
+#         for t, xy in zip(r["players_team"], r["players_pitch"]):
+#             plr_x[int(t)].append(float(xy[0]))
+#         for t, xy in zip(r["gk_team"], r["gk_pitch"]):
+#             gk_x[int(t)].append(float(xy[0]))
+
+#     def m(v): return float(np.mean(v)) if len(v) else None
+#     gk0, gk1, p0, p1 = m(gk_x[0]), m(gk_x[1]), m(plr_x[0]), m(plr_x[1])
+#     margin = GK_MARGIN_FRAC * PITCH_LENGTH
+
+#     if gk0 is not None and gk1 is not None and abs(gk0 - gk1) > 0.10 * PITCH_LENGTH:
+#         team0_right = gk0 < gk1
+#     elif gk0 is not None and abs(gk0 - CENTER) > margin:
+#         team0_right = gk0 < CENTER
+#     elif gk1 is not None and abs(gk1 - CENTER) > margin:
+#         team0_right = not (gk1 < CENTER)
+#     elif p0 is not None and p1 is not None:
+#         team0_right = p0 < p1
+#     else:
+#         team0_right = True
+#     sign = {0: +1, 1: -1} if team0_right else {0: -1, 1: +1}
+#     logger.info("Attack sign: %s", sign)
+#     return sign
+
+
+# def _offside_ids_at(rec, attacking_team, ball_xy, sign):
+#     s, dfd = sign[attacking_team], 1 - attacking_team
+#     def_adv = list(s * rec["players_pitch"][rec["players_team"] == dfd][:, 0])
+#     def_adv += list(s * rec["gk_pitch"][rec["gk_team"] == dfd][:, 0])
+#     if len(def_adv) < 2:
+#         return set(), None
+#     line_adv = max(np.sort(def_adv)[-2], s * ball_xy[0])
+#     half_adv = s * CENTER
+#     off = set()
+#     m = rec["players_team"] == attacking_team
+#     for tid, xy in zip(rec["players_tid"][m], rec["players_pitch"][m]):
+#         a = s * xy[0]
+#         if a > half_adv and (a - line_adv) > LEVEL_TOL_CM:
+#             off.add(int(tid))
+#     return off, s * line_adv
 
 def _offside_ids_at(rec, attacking_team, ball_xy, sign):
     s, dfd = sign[attacking_team], 1 - attacking_team
-    def_adv = list(s * rec["players_pitch"][rec["players_team"] == dfd][:, 0])
-    def_adv += list(s * rec["gk_pitch"][rec["gk_team"] == dfd][:, 0])
-    if len(def_adv) < 2:
+
+    dpos = rec["players_pitch"][rec["players_team"] == dfd]
+    gpos = rec["gk_pitch"][rec["gk_team"] == dfd]
+    allpos = np.vstack([dpos, gpos]) if len(gpos) else dpos
+    if len(allpos) == 0:
         return set(), None
-    line_adv = max(np.sort(def_adv)[-2], s * ball_xy[0])
+
+    # drop anything projected off the pitch (bad H / bad track / ref-as-GK midfield)
+    on = ((allpos[:, 0] >= 0) & (allpos[:, 0] <= PITCH_LENGTH) &
+          (allpos[:, 1] >= 0) & (allpos[:, 1] <= PITCH_WIDTH))
+    adv = np.sort(s * allpos[on, 0])
+    if len(adv) < 2:
+        return set(), None
+
+    # reject a lone deep outlier: if the deepest is >8m behind the next two, it's
+    # almost certainly a misclassified/keeper-confused point, not the D-line
+    if len(adv) >= 3 and (adv[-1] - adv[-2]) > 800 and (adv[-2] - adv[-3]) < 300:
+        adv = adv[:-1]
+
+    line_adv = max(adv[-2], s * ball_xy[0])
     half_adv = s * CENTER
+
     off = set()
     m = rec["players_team"] == attacking_team
     for tid, xy in zip(rec["players_tid"][m], rec["players_pitch"][m]):
+        if not (0 <= xy[0] <= PITCH_LENGTH and 0 <= xy[1] <= PITCH_WIDTH):
+            continue
         a = s * xy[0]
         if a > half_adv and (a - line_adv) > LEVEL_TOL_CM:
             off.add(int(tid))
     return off, s * line_adv
-
 
 def _detect_and_judge(records, sign):
     N = len(records)
