@@ -7,7 +7,7 @@ function App() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
 
-  const backendUrl = '';
+  const backendUrl = 'http://localhost:8000';
 
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
