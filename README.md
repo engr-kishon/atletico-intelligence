@@ -4,6 +4,8 @@ AI-powered football video analysis that automatically detects players, classifie
 
 Upload a video, and the system returns an annotated video with team-colored overlays, a live mini pitch radar, and a per-pass decision table.
 
+![Atletico Intelligence screenshot](screenshoot.png)
+
 ---
 
 ## About the Project
